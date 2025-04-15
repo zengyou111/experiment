@@ -1,0 +1,1444 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "id": "6b13cb92",
+   "metadata": {},
+   "source": [
+    "### 导入相关的库"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 2,
+   "id": "271c0151db9fc302",
+   "metadata": {
+    "collapsed": false,
+    "ExecuteTime": {
+     "end_time": "2024-10-19T13:45:01.925058Z",
+     "start_time": "2024-10-19T13:45:01.912026Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "import os\n",
+    "import json\n",
+    "import torch\n",
+    "import torch.nn.functional as F\n",
+    "import random\n",
+    "import time\n",
+    "from transformers import RobertaTokenizer, RobertaModel\n",
+    "from transformers import AutoTokenizer, AutoModel\n",
+    "from sklearn.model_selection import train_test_split\n",
+    "from torch.utils.data import DataLoader, Dataset\n",
+    "from torch import nn, optim\n",
+    "from sklearn.metrics import accuracy_score, f1_score, recall_score,precision_score\n",
+    "import matplotlib.pyplot as plt\n",
+    "from sklearn.linear_model import LogisticRegression\n",
+    "from sklearn.svm import SVC\n",
+    "from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, AdaBoostClassifier\n",
+    "from sklearn.neighbors import KNeighborsClassifier\n",
+    "from sklearn.tree import DecisionTreeClassifier, ExtraTreeClassifier\n",
+    "from sklearn.naive_bayes import GaussianNB\n",
+    "from sklearn.neural_network import MLPClassifier as SklearnMLPClassifier\n",
+    "from sklearn.preprocessing import StandardScaler\n",
+    "from sklearn.manifold import TSNE\n",
+    "import numpy as np"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "31540350",
+   "metadata": {},
+   "source": [
+    "### 将模型转移到gpu"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 3,
+   "id": "31748e3331fc139a",
+   "metadata": {
+    "collapsed": false,
+    "ExecuteTime": {
+     "end_time": "2024-10-19T13:45:02.406060Z",
+     "start_time": "2024-10-19T13:45:02.316026Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "93e5539e",
+   "metadata": {},
+   "source": [
+    "### 导入Unixcoder模型"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 4,
+   "id": "a8687b37aeb603ac",
+   "metadata": {
+    "collapsed": false,
+    "ExecuteTime": {
+     "end_time": "2024-10-19T13:45:07.403296Z",
+     "start_time": "2024-10-19T13:45:02.409031Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "# 加载tokenizer和模型\n",
+    "# 加载模型和tokenizer\n",
+    "tokenizer = AutoTokenizer.from_pretrained(\"../../../model/unixcoder/\")\n",
+    "model = AutoModel.from_pretrained(\"../../../model/unixcoder/\").to(device)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "990c12de",
+   "metadata": {},
+   "source": [
+    "### 加载数据样本\n",
+    "基本格式如下：\n",
+    "```json\n",
+    "{\n",
+    "    \"title\": \"JAVA-PY Sample\",\n",
+    "    \"code\": \"public class Example { ... }\",\n",
+    "    \"language\": \"java\",\n",
+    "    \"positive\": {\n",
+    "        \"language_positive\": \"py\",\n",
+    "        \"label\": \"1\",\n",
+    "        \"code_positive\": [\n",
+    "            {\"code\": \"def example(): ...\"},\n",
+    "            {\"code\": \"class Example: ...\"}\n",
+    "        ]\n",
+    "    },\n",
+    "    \"negative\": {\n",
+    "        \"language_negative\": \"py\",\n",
+    "        \"label\": \"0\",\n",
+    "        \"code_negative\": [\n",
+    "            {\"code\": \"def unrelated(): ...\"},\n",
+    "            {\"code\": \"class Unrelated: ...\"}\n",
+    "        ]\n",
+    "    }\n",
+    "}\n",
+    "```"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 5,
+   "id": "c9c710cfb922ce45",
+   "metadata": {
+    "collapsed": false,
+    "ExecuteTime": {
+     "end_time": "2024-10-19T13:45:10.374862Z",
+     "start_time": "2024-10-19T13:45:07.408292Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "# 加载并处理样本数据\n",
+    "def load_samples_from_jsonl(file_path, max_samples=1500):\n",
+    "    samples = []\n",
+    "    with open(file_path, 'r', encoding='utf-8') as f:\n",
+    "        for line in f:\n",
+    "            record = json.loads(line.strip())\n",
+    "            samples.append(record)\n",
+    "            if len(samples) >= max_samples:\n",
+    "                break\n",
+    "    return samples\n",
+    "\n",
+    "samples = load_samples_from_jsonl('../../../Datasets/code_pairs_java_python.jsonl')"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "2927f09c",
+   "metadata": {},
+   "source": [
+    "### 对数据进行编码，先用Tokenizer进行分词，再用GraphCodeBert模型进行编码"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 6,
+   "id": "b78e223175fe478",
+   "metadata": {
+    "collapsed": false,
+    "ExecuteTime": {
+     "end_time": "2024-10-19T14:29:26.069235Z",
+     "start_time": "2024-10-19T13:45:10.384864Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "# 对样本数据进行编码\n",
+    "def encode_sample(sample, tokenizer, model, device, max_length=512):\n",
+    "    code_inputs = tokenizer(sample['code'], return_tensors='pt', padding='max_length', truncation=True,\n",
+    "                            max_length=max_length).to(device)\n",
+    "    with torch.no_grad():\n",
+    "        code_embedding = model(**code_inputs).last_hidden_state.mean(dim=1).cpu()\n",
+    "\n",
+    "    positive_embeddings = []\n",
+    "    for positive_sample in sample['positive']['code_positive']:\n",
+    "        pos_inputs = tokenizer(positive_sample['code'], return_tensors='pt', padding='max_length', truncation=True,max_length=max_length).to(device)\n",
+    "        with torch.no_grad():\n",
+    "            pos_embedding = model(**pos_inputs).last_hidden_state.mean(dim=1).cpu()\n",
+    "        positive_embeddings.append(pos_embedding)\n",
+    "\n",
+    "    negative_embeddings = []\n",
+    "    for negative_sample in sample['negative']['code_negative']:\n",
+    "        neg_inputs = tokenizer(negative_sample['code'], return_tensors='pt', padding='max_length', truncation=True,max_length=max_length).to(device)\n",
+    "        with torch.no_grad():\n",
+    "            neg_embedding = model(**neg_inputs).last_hidden_state.mean(dim=1).cpu()\n",
+    "        negative_embeddings.append(neg_embedding)\n",
+    "\n",
+    "    return {\n",
+    "        'code_embedding': code_embedding,\n",
+    "        'positive_embeddings': positive_embeddings,\n",
+    "        'negative_embeddings': negative_embeddings\n",
+    "    }\n",
+    "\n",
+    "encoded_samples = [encode_sample(sample, tokenizer, model, device) for sample in samples]"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 7,
+   "id": "38ab6b3ac5840356",
+   "metadata": {
+    "collapsed": false,
+    "ExecuteTime": {
+     "end_time": "2024-10-19T14:29:26.162273Z",
+     "start_time": "2024-10-19T14:29:26.085266Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "#### solotion3\n",
+    "class CombinedProjectionHead(nn.Module):\n",
+    "    def __init__(self, input_dim):\n",
+    "        super(CombinedProjectionHead, self).__init__()\n",
+    "        self.fc1 = nn.Linear(input_dim, input_dim)\n",
+    "        self.selective_fc = nn.Linear(input_dim, input_dim)\n",
+    "        self.swish = nn.SiLU()\n",
+    "        self.control_weight = nn.Parameter(torch.ones(input_dim))  # 学习的权重参数\n",
+    "        self.fc2 = nn.Linear(input_dim, input_dim)\n",
+    "\n",
+    "    def forward(self, x):\n",
+    "        # 第一个全连接层\n",
+    "        x = self.fc1(x)\n",
+    "        # 选择性激活部分\n",
+    "        selective_output = self.swish(self.selective_fc(x)) * x\n",
+    "        # 使用控制权重进行调整\n",
+    "        adjusted_output = selective_output * self.control_weight\n",
+    "        # 第二个全连接层\n",
+    "        output = self.fc2(adjusted_output)\n",
+    "        return output\n",
+    "\n",
+    "\n",
+    "class SimCLR(nn.Module):\n",
+    "    def __init__(self, input_dim=768):\n",
+    "        super(SimCLR, self).__init__()\n",
+    "        self.projection_head = CombinedProjectionHead(input_dim)\n",
+    "\n",
+    "    def forward(self, x):\n",
+    "        return self.projection_head(x)\n",
+    "\n",
+    "contrastive_model = SimCLR(input_dim=768).to(device)\n",
+    "optimizer = optim.AdamW(contrastive_model.parameters(), lr=3e-4)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 8,
+   "id": "875a689132df6617",
+   "metadata": {
+    "collapsed": false,
+    "ExecuteTime": {
+     "end_time": "2024-10-19T14:29:26.179235Z",
+     "start_time": "2024-10-19T14:29:26.165234Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "# 定义新的对比学习损失函数\n",
+    "'''\n",
+    "参数:\n",
+    "anchor:锚点\n",
+    "positives:正样本集\n",
+    "negatives:负样本\n",
+    "temperatures:负样本集\n",
+    "'''\n",
+    "def simclr_contrastive_loss(anchor, positives, negatives, temperature=0.2):\n",
+    "    anchor = F.normalize(anchor, dim=1)\n",
+    "    positives = [F.normalize(pos, dim=1) for pos in positives]\n",
+    "    negatives = [F.normalize(neg, dim=1) for neg in negatives]\n",
+    "\n",
+    "    positive_loss = 0\n",
+    "    for pos in positives:\n",
+    "        pos_similarity = torch.exp(torch.mm(anchor, pos.t()) / temperature)\n",
+    "        neg_similarity = sum(torch.exp(torch.mm(anchor, neg.t()) / temperature) for neg in negatives)\n",
+    "        positive_loss += -torch.log(pos_similarity / (pos_similarity + neg_similarity)).mean()\n",
+    "\n",
+    "    loss = positive_loss / len(positives)\n",
+    "    return loss"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 9,
+   "id": "de5f4156e33644d4",
+   "metadata": {
+    "collapsed": false,
+    "ExecuteTime": {
+     "end_time": "2024-10-19T14:29:26.192236Z",
+     "start_time": "2024-10-19T14:29:26.182237Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "# 定义数据集\n",
+    "class CodeCloneDataset(Dataset):\n",
+    "    def __init__(self, samples):\n",
+    "        self.samples = samples\n",
+    "\n",
+    "    def __len__(self):\n",
+    "        return len(self.samples)\n",
+    "\n",
+    "    def __getitem__(self, idx):\n",
+    "        sample = self.samples[idx]\n",
+    "        anchor = sample['code_embedding'].view(1, -1)  # 确保 anchor 是二维矩阵\n",
+    "        positives = [pos.view(1, -1) for pos in sample['positive_embeddings']]  # 确保 positives 是二维矩阵\n",
+    "        negatives = [neg.view(1, -1) for neg in sample['negative_embeddings']]  # 确保 negatives 是二维矩阵\n",
+    "        return anchor, positives, negatives"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "outputs": [],
+   "source": [
+    "# 早停\n",
+    "control_weights_history = []\n",
+    "def train_contrastive_model(encoded_samples, val_encoded_samples, contrastive_model, epochs=100, temperature=0.2, patience=2):\n",
+    "    global control_weights_history\n",
+    "    train_dataset = CodeCloneDataset(encoded_samples)\n",
+    "    val_dataset = CodeCloneDataset(val_encoded_samples)\n",
+    "    \n",
+    "    train_dataloader = DataLoader(train_dataset, batch_size=1, shuffle=True)\n",
+    "    val_dataloader = DataLoader(val_dataset, batch_size=1, shuffle=False)\n",
+    "    \n",
+    "    optimizer = torch.optim.Adam(contrastive_model.parameters(), lr=0.001)  # 假设使用Adam优化器\n",
+    "    \n",
+    "    contrastive_model.train()\n",
+    "    losses = []\n",
+    "    val_losses = []\n",
+    "    best_val_loss = float('inf')\n",
+    "    no_improvement_count = 0\n",
+    "    start_time = time.time()  # 记录训练开始时间\n",
+    "    \n",
+    "    for epoch in range(epochs):\n",
+    "        total_loss = 0\n",
+    "        contrastive_model.train()  # 设置模型为训练模式\n",
+    "        \n",
+    "        for i, (anchor, positives, negatives) in enumerate(train_dataloader):\n",
+    "            optimizer.zero_grad()\n",
+    "            anchor, positives, negatives = anchor.to(device), [pos.to(device) for pos in positives], [neg.to(device) for neg in negatives]\n",
+    "            anchor = contrastive_model(anchor)\n",
+    "            positives = [contrastive_model(pos) for pos in positives]\n",
+    "            negatives = [contrastive_model(neg) for neg in negatives]\n",
+    "            anchor = anchor.view(anchor.size(0), -1)  # 确保 anchor 是二维矩阵\n",
+    "            positives = [pos.view(pos.size(0), -1) for pos in positives]  # 确保 positives 是二维矩阵\n",
+    "            negatives = [neg.view(neg.size(0), -1) for neg in negatives]  # 确保 negatives 是二维矩阵\n",
+    "            loss = simclr_contrastive_loss(anchor, positives, negatives, temperature)\n",
+    "            loss.backward()\n",
+    "            optimizer.step()\n",
+    "            total_loss += loss.item()\n",
+    "        \n",
+    "        avg_train_loss = total_loss / len(train_dataloader)\n",
+    "        losses.append(avg_train_loss)\n",
+    "        print(f'Epoch {epoch + 1}, Train Loss: {avg_train_loss}', end=\" \")\n",
+    "        \n",
+    "        # 记录权重\n",
+    "        current_control_weights = contrastive_model.projection_head.control_weight.detach().cpu().numpy()\n",
+    "        control_weights_history.append(current_control_weights)\n",
+    "        \n",
+    "        # 验证集评估\n",
+    "        contrastive_model.eval()  # 设置模型为评估模式\n",
+    "        total_val_loss = 0\n",
+    "        \n",
+    "        with torch.no_grad():\n",
+    "            for i, (anchor, positives, negatives) in enumerate(val_dataloader):\n",
+    "                anchor, positives, negatives = anchor.to(device), [pos.to(device) for pos in positives], [neg.to(device) for neg in negatives]\n",
+    "                anchor = contrastive_model(anchor)\n",
+    "                positives = [contrastive_model(pos) for pos in positives]\n",
+    "                negatives = [contrastive_model(neg) for neg in negatives]\n",
+    "                anchor = anchor.view(anchor.size(0), -1)  # 确保 anchor 是二维矩阵\n",
+    "                positives = [pos.view(pos.size(0), -1) for pos in positives]  # 确保 positives 是二维矩阵\n",
+    "                negatives = [neg.view(neg.size(0), -1) for neg in negatives]  # 确保 negatives 是二维矩阵\n",
+    "                val_loss = simclr_contrastive_loss(anchor, positives, negatives, temperature)\n",
+    "                total_val_loss += val_loss.item()\n",
+    "        \n",
+    "        avg_val_loss = total_val_loss / len(val_dataloader)\n",
+    "        val_losses.append(avg_val_loss)\n",
+    "        print(f'Validation Loss: {avg_val_loss}')\n",
+    "        \n",
+    "        # 早停法逻辑\n",
+    "        if avg_val_loss < best_val_loss:\n",
+    "            best_val_loss = avg_val_loss\n",
+    "            no_improvement_count = 0\n",
+    "            # 保存最佳模型\n",
+    "            torch.save(contrastive_model.state_dict(), 'best_model.pth')\n",
+    "        else:\n",
+    "            no_improvement_count += 1\n",
+    "            if no_improvement_count >= patience:\n",
+    "                print(f'Early stopping triggered after {epoch + 1} epochs.')\n",
+    "                break\n",
+    "        \n",
+    "        torch.cuda.empty_cache()\n",
+    "    \n",
+    "    end_time = time.time()  # 记录训练结束时间\n",
+    "    training_time = end_time - start_time  # 计算总训练时间\n",
+    "    return losses, val_losses, training_time"
+   ],
+   "metadata": {
+    "collapsed": false,
+    "ExecuteTime": {
+     "end_time": "2024-10-19T14:29:26.225268Z",
+     "start_time": "2024-10-19T14:29:26.195239Z"
+    }
+   },
+   "id": "96c5a63d2f2f2210",
+   "execution_count": 10
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 11,
+   "id": "678493c3d422193",
+   "metadata": {
+    "collapsed": false,
+    "ExecuteTime": {
+     "end_time": "2024-10-19T14:29:26.238275Z",
+     "start_time": "2024-10-19T14:29:26.227235Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "# 定义改进的MLP分类器\n",
+    "class MLPClassifier(nn.Module):\n",
+    "    def __init__(self, input_size, hidden_size):\n",
+    "        super(MLPClassifier, self).__init__()\n",
+    "        self.fc1 = nn.Linear(input_size * 2, hidden_size)\n",
+    "        self.fc2 = nn.Linear(hidden_size, hidden_size // 2)\n",
+    "        self.fc3 = nn.Linear(hidden_size // 2, 2)  # 二分类\n",
+    "        self.relu = nn.ReLU()\n",
+    "        self.log_softmax = nn.LogSoftmax(dim=1)\n",
+    "\n",
+    "    def forward(self, x1, x2):\n",
+    "        combined = torch.cat((x1, x2), dim=1)\n",
+    "        out = self.fc1(combined)\n",
+    "        out = self.relu(out)\n",
+    "        out = self.fc2(out)\n",
+    "        out = self.relu(out)\n",
+    "        out = self.fc3(out)\n",
+    "        out = self.log_softmax(out)\n",
+    "        return out"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "outputs": [],
+   "source": [
+    "######早停法\n",
+    "def train_and_evaluate_model(model, criterion, optimizer, train_loader, val_loader, test_data, num_epochs=100, patience=2):\n",
+    "    train_losses = []\n",
+    "    val_losses = []\n",
+    "    val_accuracies = []\n",
+    "    val_recalls = []\n",
+    "    val_f1s = []\n",
+    "    val_precisions = []\n",
+    "    \n",
+    "    best_val_loss = float('inf')\n",
+    "    no_improvement_count = 0\n",
+    "    start_time = time.time()  # 记录训练开始时间\n",
+    "    \n",
+    "    for epoch in range(num_epochs):\n",
+    "        model.train()\n",
+    "        total_loss = 0\n",
+    "        all_preds = []\n",
+    "        all_labels = []\n",
+    "        \n",
+    "        for (emb1, emb2), label in train_loader:\n",
+    "            emb1, emb2, label = emb1.to(device), emb2.to(device), label.to(device)\n",
+    "            optimizer.zero_grad()\n",
+    "            output = model(emb1, emb2)\n",
+    "            loss = criterion(output, label)\n",
+    "            loss.backward(retain_graph=True)\n",
+    "            optimizer.step()\n",
+    "            total_loss += loss.item()\n",
+    "            preds = torch.argmax(output, dim=1)\n",
+    "            all_preds.extend(preds.cpu().numpy())\n",
+    "            all_labels.extend(label.cpu().numpy())\n",
+    "\n",
+    "        accuracy = accuracy_score(all_labels, all_preds)\n",
+    "        recall = recall_score(all_labels, all_preds)\n",
+    "        f1 = f1_score(all_labels, all_preds)\n",
+    "        precision = precision_score(all_labels, all_preds)\n",
+    "        \n",
+    "        print(f'Epoch {epoch + 1}, Train Loss: {total_loss / len(train_loader):.4f}', end=\" \")\n",
+    "        train_losses.append(total_loss / len(train_loader))\n",
+    "                \n",
+    "        # 验证集评估\n",
+    "        model.eval()\n",
+    "        total_val_loss = 0\n",
+    "        all_val_preds = []\n",
+    "        all_val_labels = []\n",
+    "        \n",
+    "        with torch.no_grad():\n",
+    "            for (emb1, emb2), label in val_loader:\n",
+    "                emb1, emb2, label = emb1.to(device), emb2.to(device), label.to(device)\n",
+    "                val_output = model(emb1, emb2)\n",
+    "                val_loss = criterion(val_output, label)\n",
+    "                total_val_loss += val_loss.item()\n",
+    "                val_preds = torch.argmax(val_output, dim=1)\n",
+    "                all_val_preds.extend(val_preds.cpu().numpy())\n",
+    "                all_val_labels.extend(label.cpu().numpy())\n",
+    "        \n",
+    "        val_accuracy = accuracy_score(all_val_labels, all_val_preds)\n",
+    "        val_recall = recall_score(all_val_labels, all_val_preds)\n",
+    "        val_f1 = f1_score(all_val_labels, all_val_preds)\n",
+    "        val_precision = precision_score(all_val_labels, all_val_preds)\n",
+    "        print(f'Val Loss: {total_val_loss / len(val_loader):.4f}')\n",
+    "        val_losses.append(total_val_loss / len(val_loader))\n",
+    "        val_accuracies.append(val_accuracy)\n",
+    "        val_recalls.append(val_recall)\n",
+    "        val_f1s.append(val_f1)\n",
+    "        val_precisions.append(val_precision)\n",
+    "        \n",
+    "        # 早停法逻辑\n",
+    "        if total_val_loss / len(val_loader) < best_val_loss:\n",
+    "            best_val_loss = total_val_loss / len(val_loader)\n",
+    "            no_improvement_count = 0\n",
+    "            # 保存最佳模型\n",
+    "            torch.save(model.state_dict(), 'best_model.pth')\n",
+    "        else:\n",
+    "            no_improvement_count += 1\n",
+    "            if no_improvement_count >= patience:\n",
+    "                print(f'Early stopping triggered after {epoch + 1} epochs.')\n",
+    "                break\n",
+    "    \n",
+    "    end_time = time.time()  # 记录训练结束时间\n",
+    "    training_time = end_time - start_time  # 计算总训练时间\n",
+    "\n",
+    "    # 在测试集上评估\n",
+    "    model.load_state_dict(torch.load('best_model.pth'))  # 加载最佳模型\n",
+    "    model.eval()\n",
+    "    with torch.no_grad():\n",
+    "        emb1_test, emb2_test, labels_test = test_data\n",
+    "        start_time = time.time()  # 记录预测开始时间\n",
+    "        test_output = model(emb1_test, emb2_test)\n",
+    "        end_time = time.time()  # 记录预测结束时间\n",
+    "        prediction_time = end_time - start_time  # 计算预测时间\n",
+    "        test_preds = torch.argmax(test_output, dim=1).cpu().numpy()\n",
+    "        test_labels = labels_test.cpu().numpy()\n",
+    "        test_accuracy = accuracy_score(test_labels, test_preds)\n",
+    "        test_recall = recall_score(test_labels, test_preds)\n",
+    "        test_f1 = f1_score(test_labels, test_preds)\n",
+    "        test_precision = precision_score(test_labels, test_preds)\n",
+    "        \n",
+    "        print(f'Test Accuracy: {test_accuracy:.4f}, Test Recall: {test_recall:.4f}, Test F1 Score: {test_f1:.4f}, Test Precision: {test_precision:.4f}')\n",
+    "    \n",
+    "    return test_accuracy, test_recall, test_f1, test_precision, train_losses, val_losses, training_time, prediction_time"
+   ],
+   "metadata": {
+    "collapsed": false,
+    "ExecuteTime": {
+     "end_time": "2024-10-19T14:29:26.271237Z",
+     "start_time": "2024-10-19T14:29:26.242235Z"
+    }
+   },
+   "id": "9c5153a27f73c03e",
+   "execution_count": 12
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 13,
+   "id": "caa65847c7637afc",
+   "metadata": {
+    "collapsed": false,
+    "ExecuteTime": {
+     "end_time": "2024-10-19T14:29:26.298239Z",
+     "start_time": "2024-10-19T14:29:26.282234Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "# 获取初始嵌入的评价指标\n",
+    "def evaluate_clones(samples, model, contrastive_model=None, mlp_model=None):\n",
+    "    model.eval()\n",
+    "    if contrastive_model:\n",
+    "        contrastive_model.eval()\n",
+    "    if mlp_model:\n",
+    "        mlp_model.eval()\n",
+    "\n",
+    "    all_labels = []\n",
+    "    all_preds = []\n",
+    "\n",
+    "    start_time = time.time()  # 记录预测开始时间\n",
+    "\n",
+    "    for sample in samples:\n",
+    "        anchor = sample['code_embedding'].squeeze().to(device)  # 确保 anchor 是二维矩阵\n",
+    "        positives = [pos.squeeze().to(device) for pos in sample['positive_embeddings']]  # 确保 positives 是二维矩阵\n",
+    "        negatives = [neg.squeeze().to(device) for neg in sample['negative_embeddings']]  # 确保 negatives 是二维矩阵\n",
+    "\n",
+    "        if contrastive_model:\n",
+    "            with torch.no_grad():\n",
+    "                anchor = contrastive_model(anchor)\n",
+    "                positives = [contrastive_model(pos) for pos in positives]\n",
+    "                negatives = [contrastive_model(neg) for neg in negatives]\n",
+    "\n",
+    "        if mlp_model:\n",
+    "            with torch.no_grad():\n",
+    "                for pos in positives:\n",
+    "                    output = mlp_model(anchor, pos)\n",
+    "                    all_labels.append(1)\n",
+    "                    all_preds.append(torch.argmax(output).item())\n",
+    "                for neg in negatives:\n",
+    "                    output = mlp_model(anchor, neg)\n",
+    "                    all_labels.append(0)\n",
+    "                    all_preds.append(torch.argmax(output).item())\n",
+    "        else:\n",
+    "            for pos in positives:\n",
+    "                similarity = F.cosine_similarity(anchor, pos, dim=0).item()\n",
+    "                all_labels.append(1)\n",
+    "                all_preds.append(1 if similarity > 0.5 else 0)\n",
+    "\n",
+    "            for neg in negatives:\n",
+    "                similarity = F.cosine_similarity(anchor, neg, dim=0).item()\n",
+    "                all_labels.append(0)\n",
+    "                all_preds.append(0 if similarity <= 0.5 else 1)\n",
+    "\n",
+    "    end_time = time.time()  # 记录预测结束时间\n",
+    "    prediction_time = end_time - start_time  # 计算预测时间\n",
+    "\n",
+    "    acc = accuracy_score(all_labels, all_preds)\n",
+    "    f1 = f1_score(all_labels, all_preds)\n",
+    "    recall = recall_score(all_labels, all_preds)\n",
+    "    precision=precision_score(all_labels,all_preds)\n",
+    "    return acc, f1, recall,precision, prediction_time"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 14,
+   "id": "88545335397339b",
+   "metadata": {
+    "collapsed": false,
+    "ExecuteTime": {
+     "end_time": "2024-10-19T14:29:26.330236Z",
+     "start_time": "2024-10-19T14:29:26.301240Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "# 将数据集分为训练集和测试集\n",
+    "train_samples, remaining_samples = train_test_split(encoded_samples, test_size=0.4, random_state=42)\n",
+    "\n",
+    "# 第二次分割：将剩余部分分为验证集和测试集\n",
+    "val_samples, test_samples = train_test_split(remaining_samples, test_size=0.5, random_state=42)\n",
+    "# train_samples, test_samples = train_test_split(encoded_samples, test_size=0.2, random_state=42)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 15,
+   "id": "e36f0206e2a2204e",
+   "metadata": {
+    "collapsed": false,
+    "ExecuteTime": {
+     "end_time": "2024-10-19T14:29:31.102332Z",
+     "start_time": "2024-10-19T14:29:26.332256Z"
+    }
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Initial Embedding - ACC: 0.7017794191707235, F1: 0.7276768605809765, Recall: 0.7968776229645795,Precision:0.6695345557122708\n"
+     ]
+    }
+   ],
+   "source": [
+    "# 初始嵌入的检测结果\n",
+    "initial_acc, initial_f1, initial_recall,initial_precision,initial_prediction_time = evaluate_clones(test_samples, model)\n",
+    "print(f''\n",
+    "      f'Initial Embedding - ACC: {initial_acc}, '\n",
+    "      f'F1: {initial_f1},'\n",
+    "      f' Recall: {initial_recall},'\n",
+    "      f'Precision:{initial_precision}'\n",
+    "    )"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 16,
+   "id": "56083208e408a0aa",
+   "metadata": {
+    "collapsed": false,
+    "ExecuteTime": {
+     "end_time": "2024-10-19T15:32:28.812341Z",
+     "start_time": "2024-10-19T14:29:31.104300Z"
+    }
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Epoch 1, Train Loss: 1.6094907904858702 Validation Loss: 1.1154482037310178\n",
+      "Epoch 2, Train Loss: 0.8782640949572023 Validation Loss: 0.9498295417459061\n",
+      "Epoch 3, Train Loss: 0.6466589835213704 Validation Loss: 0.7892741959122941\n",
+      "Epoch 4, Train Loss: 0.5222531271151577 Validation Loss: 0.7284890705812722\n",
+      "Epoch 5, Train Loss: 0.40414779835716924 Validation Loss: 0.6581245878400902\n",
+      "Epoch 6, Train Loss: 0.34336206930482555 Validation Loss: 0.56607979927212\n",
+      "Epoch 7, Train Loss: 0.270645743559839 Validation Loss: 0.4850094183037678\n",
+      "Epoch 8, Train Loss: 0.2179385039008533 Validation Loss: 0.4824079862485329\n",
+      "Epoch 9, Train Loss: 0.18770567112990344 Validation Loss: 0.42970530170947313\n",
+      "Epoch 10, Train Loss: 0.1682750929079743 Validation Loss: 0.4802454978848497\n",
+      "Epoch 11, Train Loss: 0.15524006452178582 Validation Loss: 0.35382329104468224\n",
+      "Epoch 12, Train Loss: 0.11606536328508 Validation Loss: 0.3436221041592459\n",
+      "Epoch 13, Train Loss: 0.10993705169608195 Validation Loss: 0.35527241924467184\n",
+      "Epoch 14, Train Loss: 0.08112101708901011 Validation Loss: 0.3023122488707304\n",
+      "Epoch 15, Train Loss: 0.10575374544546422 Validation Loss: 0.28826429959697025\n",
+      "Epoch 16, Train Loss: 0.08398848590544529 Validation Loss: 0.29726129757085196\n",
+      "Epoch 17, Train Loss: 0.06552567623167609 Validation Loss: 0.3159927782261123\n",
+      "Early stopping triggered after 17 epochs.\n",
+      "Contrastive Learning Embedding - ACC: 0.9760785630350848, F1: 0.9763622791739238, Recall: 0.9880812489508142,Precision:0.9649180327868853\n"
+     ]
+    }
+   ],
+   "source": [
+    "# 对比学习后的嵌入检测结果\n",
+    "# losses, val_losses, training_time\n",
+    "contrastive_losses,val_losses, contrastive_training_time = train_contrastive_model(train_samples,val_samples, contrastive_model,100)\n",
+    "contrastive_acc, contrastive_f1, contrastive_recall,contrastive_precision ,contrastive_prediction_time = evaluate_clones(test_samples, model, contrastive_model)\n",
+    "print(\n",
+    "    f'Contrastive Learning Embedding - ACC: {contrastive_acc},'\n",
+    "    f' F1: {contrastive_f1},'\n",
+    "    f' Recall: {contrastive_recall},'\n",
+    "    f'Precision:{contrastive_precision}'\n",
+    ")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 17,
+   "id": "67d8de005bdcdd03",
+   "metadata": {
+    "collapsed": false,
+    "ExecuteTime": {
+     "end_time": "2024-10-19T15:32:57.519823Z",
+     "start_time": "2024-10-19T15:32:28.816311Z"
+    }
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Epoch 1, Train Loss: 0.2038 Val Loss: 0.2199\n",
+      "Epoch 2, Train Loss: 0.0503 Val Loss: 0.2545\n",
+      "Epoch 3, Train Loss: 0.0338 Val Loss: 0.2387\n",
+      "Early stopping triggered after 3 epochs.\n",
+      "Test Accuracy: 0.9420, Test Recall: 0.9822, Test F1 Score: 0.9442, Test Precision: 0.9091\n",
+      "Initial Embedding + MLP - ACC: 0.9420010072183985, F1: 0.944242717663197, Recall: 0.9822058082927648,Precision:0.9091050341827221\n"
+     ]
+    }
+   ],
+   "source": [
+    "# 初始嵌入接MLP的检测结果\n",
+    "mlp_model_initial = MLPClassifier(input_size=768, hidden_size=512).to(device)\n",
+    "mlp_optimizer_initial = optim.AdamW(mlp_model_initial.parameters(), lr=3e-4)\n",
+    "train_pairs_initial, train_labels_initial = [], []\n",
+    "val_pairs_initial, val_labels_initial = [], []\n",
+    "test_pairs_initial, test_labels_initial = [], []\n",
+    "for sample in train_samples:\n",
+    "    anchor = sample['code_embedding'].squeeze()\n",
+    "    for pos in sample['positive_embeddings']:\n",
+    "        train_pairs_initial.append((anchor, pos.squeeze()))\n",
+    "        train_labels_initial.append(1)\n",
+    "    for neg in sample['negative_embeddings']:\n",
+    "        train_pairs_initial.append((anchor, neg.squeeze()))\n",
+    "        train_labels_initial.append(0)\n",
+    "\n",
+    "for sample in val_samples:\n",
+    "    anchor = sample['code_embedding'].squeeze()\n",
+    "    for pos in sample['positive_embeddings']:\n",
+    "        val_pairs_initial.append((anchor, pos.squeeze()))\n",
+    "        val_labels_initial.append(1)\n",
+    "    for neg in sample['negative_embeddings']:\n",
+    "        val_pairs_initial.append((anchor, neg.squeeze()))\n",
+    "        val_labels_initial.append(0)\n",
+    "\n",
+    "train_loader_initial = DataLoader(list(zip(train_pairs_initial, train_labels_initial)), batch_size=16, shuffle=True)\n",
+    "val_loader_initial = DataLoader(list(zip(val_pairs_initial, val_labels_initial)), batch_size=16, shuffle=True)\n",
+    "\n",
+    "for sample in test_samples:\n",
+    "    anchor = sample['code_embedding'].squeeze()\n",
+    "    for pos in sample['positive_embeddings']:\n",
+    "        test_pairs_initial.append((anchor, pos.squeeze()))\n",
+    "        test_labels_initial.append(1)\n",
+    "    for neg in sample['negative_embeddings']:\n",
+    "        test_pairs_initial.append((anchor, neg.squeeze()))\n",
+    "        test_labels_initial.append(0)\n",
+    "test_data_initial = (\n",
+    "    torch.stack([pair[0] for pair in test_pairs_initial]).to(device),\n",
+    "    torch.stack([pair[1] for pair in test_pairs_initial]).to(device),\n",
+    "    torch.tensor(test_labels_initial).to(device)\n",
+    ")\n",
+    "\n",
+    "'''\n",
+    "test_accuracy, test_recall, test_f1, test_precision, train_losses, training_time, prediction_time\n",
+    "'''\n",
+    "\n",
+    "\n",
+    "initial_mlp_acc, initial_mlp_recall, initial_mlp_f1, initial_mlp_precision,initial_mlp_losses,initial_mlp_val_losses,initial_mlp_training_time, initial_mlp_prediction_time = train_and_evaluate_model(\n",
+    "    mlp_model_initial, nn.CrossEntropyLoss(), mlp_optimizer_initial, train_loader_initial, val_loader_initial,test_data_initial,50\n",
+    ")\n",
+    "print(\n",
+    "    f'Initial Embedding + MLP - ACC: {initial_mlp_acc},'\n",
+    "    f' F1: {initial_mlp_f1}, '\n",
+    "    f'Recall: {initial_mlp_recall},'\n",
+    "    f'Precision:{initial_mlp_precision}'\n",
+    ")\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 18,
+   "id": "32a87660ff813bd3",
+   "metadata": {
+    "collapsed": false,
+    "ExecuteTime": {
+     "end_time": "2024-10-19T15:36:59.244304Z",
+     "start_time": "2024-10-19T15:32:57.522839Z"
+    }
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Epoch 1, Train Loss: 3.8717 Val Loss: 15.1031\n",
+      "Epoch 2, Train Loss: 1.9605 Val Loss: 12.9017\n",
+      "Epoch 3, Train Loss: 2.0109 Val Loss: 14.6588\n",
+      "Epoch 4, Train Loss: 1.8553 Val Loss: 15.6324\n",
+      "Early stopping triggered after 4 epochs.\n",
+      "Test Accuracy: 0.9692, Test Recall: 0.9817, Test F1 Score: 0.9696, Test Precision: 0.9577\n",
+      "Contrastive Learning Embedding + MLP - ACC: 0.9691959039785126, F1: 0.9695763906159329, Recall: 0.9817021990935034,Precision:0.9577464788732394\n"
+     ]
+    }
+   ],
+   "source": [
+    "# 对比学习后的嵌入接MLP的检测结果\n",
+    "mlp_model_contrastive = MLPClassifier(input_size=768, hidden_size=512).to(device)\n",
+    "mlp_optimizer_contrastive = optim.AdamW(mlp_model_contrastive.parameters(), lr=3e-5)\n",
+    "\n",
+    "train_pairs_contrastive, train_labels_contrastive = [], []\n",
+    "val_pairs_contrastive, val_labels_contrastive = [], []\n",
+    "test_pairs_contrastive, test_labels_contrastive = [], []\n",
+    "for sample in train_samples:\n",
+    "    anchor = contrastive_model(sample['code_embedding'].squeeze().to(device))\n",
+    "    for pos in sample['positive_embeddings']:\n",
+    "        train_pairs_contrastive.append((anchor, contrastive_model(pos.squeeze().to(device))))\n",
+    "        train_labels_contrastive.append(1)\n",
+    "    for neg in sample['negative_embeddings']:\n",
+    "        train_pairs_contrastive.append((anchor, contrastive_model(neg.squeeze().to(device))))\n",
+    "        train_labels_contrastive.append(0)\n",
+    "train_loader_contrastive = DataLoader(list(zip(train_pairs_contrastive, train_labels_contrastive)), batch_size=16,shuffle=True)\n",
+    "\n",
+    "\n",
+    "for sample in val_samples:\n",
+    "    anchor = contrastive_model(sample['code_embedding'].squeeze().to(device))\n",
+    "    for pos in sample['positive_embeddings']:\n",
+    "        val_pairs_contrastive.append((anchor, contrastive_model(pos.squeeze().to(device))))\n",
+    "        val_labels_contrastive.append(1)\n",
+    "    for neg in sample['negative_embeddings']:\n",
+    "        val_pairs_contrastive.append((anchor, contrastive_model(neg.squeeze().to(device))))\n",
+    "        val_labels_contrastive.append(0)\n",
+    "val_loader_contrastive = DataLoader(list(zip(val_pairs_contrastive, val_labels_contrastive)), batch_size=16, shuffle=True)\n",
+    "\n",
+    "\n",
+    "for sample in test_samples:\n",
+    "    anchor = contrastive_model(sample['code_embedding'].squeeze().to(device))\n",
+    "    for pos in sample['positive_embeddings']:\n",
+    "        test_pairs_contrastive.append((anchor, contrastive_model(pos.squeeze().to(device))))\n",
+    "        test_labels_contrastive.append(1)\n",
+    "    for neg in sample['negative_embeddings']:\n",
+    "        test_pairs_contrastive.append((anchor, contrastive_model(neg.squeeze().to(device))))\n",
+    "        test_labels_contrastive.append(0)\n",
+    "test_data_contrastive = (\n",
+    "    torch.stack([pair[0] for pair in test_pairs_contrastive]).to(device),\n",
+    "    torch.stack([pair[1] for pair in test_pairs_contrastive]).to(device),\n",
+    "    torch.tensor(test_labels_contrastive).to(device)\n",
+    ")\n",
+    "\n",
+    "\n",
+    "contrastive_mlp_acc, contrastive_mlp_recall, contrastive_mlp_f1,contrastive_mlp_precision, contrastive_mlp_losses,contrastive_mlp_val_losses, contrastive_mlp_training_time, contrastive_mlp_prediction_time = train_and_evaluate_model(\n",
+    "    mlp_model_contrastive, nn.CrossEntropyLoss(), mlp_optimizer_contrastive, train_loader_contrastive,val_loader_contrastive,\n",
+    "    test_data_contrastive,50\n",
+    ")\n",
+    "print(\n",
+    "    f'Contrastive Learning Embedding + MLP - ACC: {contrastive_mlp_acc}, '\n",
+    "    f'F1: {contrastive_mlp_f1},'\n",
+    "    f' Recall: {contrastive_mlp_recall},'\n",
+    "    f'Precision:{contrastive_mlp_precision}'\n",
+    ")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 19,
+   "id": "90e638421b8ac8c8",
+   "metadata": {
+    "collapsed": false,
+    "ExecuteTime": {
+     "end_time": "2024-10-19T15:36:59.255399Z",
+     "start_time": "2024-10-19T15:36:59.246401Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "# 其他分类器的对比实验\n",
+    "classifiers = {\n",
+    "    'Logistic Regression': LogisticRegression(max_iter=1000),\n",
+    "    'SVM': SVC(),\n",
+    "    'Random Forest': RandomForestClassifier(),\n",
+    "    'KNN': KNeighborsClassifier(),\n",
+    "    'Decision Tree': DecisionTreeClassifier(),\n",
+    "    'Extra Tree': ExtraTreeClassifier(),\n",
+    "    'Gaussian NB': GaussianNB(),\n",
+    "    'Gradient Boosting': GradientBoostingClassifier(),\n",
+    "    'AdaBoost': AdaBoostClassifier(),\n",
+    "}"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 20,
+   "id": "4c100e2b08fd4807",
+   "metadata": {
+    "collapsed": false,
+    "ExecuteTime": {
+     "end_time": "2024-10-19T15:36:59.289377Z",
+     "start_time": "2024-10-19T15:36:59.259378Z"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "\n",
+    "def evaluate_classifiers(train_samples, val_samples, test_samples, classifiers, contrastive_model):\n",
+    "    X_train, y_train, X_val, y_val, X_test, y_test = [], [], [], [], [], []\n",
+    "\n",
+    "    # 准备训练集数据\n",
+    "    for sample in train_samples:\n",
+    "        anchor = contrastive_model(sample['code_embedding'].view(-1).to(device)).cpu().detach().numpy().flatten()\n",
+    "        for pos in sample['positive_embeddings']:\n",
+    "            X_train.append(anchor + contrastive_model(pos.view(-1).to(device)).cpu().detach().numpy().flatten())\n",
+    "            y_train.append(1)\n",
+    "        for neg in sample['negative_embeddings']:\n",
+    "            X_train.append(anchor + contrastive_model(neg.view(-1).to(device)).cpu().detach().numpy().flatten())\n",
+    "            y_train.append(0)\n",
+    "\n",
+    "    # 准备验证集数据\n",
+    "    for sample in val_samples:\n",
+    "        anchor = contrastive_model(sample['code_embedding'].view(-1).to(device)).cpu().detach().numpy().flatten()\n",
+    "        for pos in sample['positive_embeddings']:\n",
+    "            X_val.append(anchor + contrastive_model(pos.view(-1).to(device)).cpu().detach().numpy().flatten())\n",
+    "            y_val.append(1)\n",
+    "        for neg in sample['negative_embeddings']:\n",
+    "            X_val.append(anchor + contrastive_model(neg.view(-1).to(device)).cpu().detach().numpy().flatten())\n",
+    "            y_val.append(0)\n",
+    "\n",
+    "    # 准备测试集数据\n",
+    "    for sample in test_samples:\n",
+    "        anchor = contrastive_model(sample['code_embedding'].view(-1).to(device)).cpu().detach().numpy().flatten()\n",
+    "        for pos in sample['positive_embeddings']:\n",
+    "            X_test.append(anchor + contrastive_model(pos.view(-1).to(device)).cpu().detach().numpy().flatten())\n",
+    "            y_test.append(1)\n",
+    "        for neg in sample['negative_embeddings']:\n",
+    "            X_test.append(anchor + contrastive_model(neg.view(-1).to(device)).cpu().detach().numpy().flatten())\n",
+    "            y_test.append(0)\n",
+    "\n",
+    "    scaler = StandardScaler()\n",
+    "    X_train = scaler.fit_transform(X_train)\n",
+    "    X_val = scaler.transform(X_val)\n",
+    "    X_test = scaler.transform(X_test)\n",
+    "\n",
+    "    results = {}\n",
+    "    training_times = {}\n",
+    "    prediction_times = {}\n",
+    "    val_results = {}\n",
+    "\n",
+    "    for name, clf in classifiers.items():\n",
+    "        start_time = time.time()  # 记录训练开始时间\n",
+    "        clf.fit(X_train, y_train)\n",
+    "        end_time = time.time()  # 记录训练结束时间\n",
+    "        training_time = end_time - start_time  # 计算训练时间\n",
+    "        training_times[name] = training_time\n",
+    "\n",
+    "        # 验证集评估\n",
+    "        start_time = time.time()  # 记录预测开始时间\n",
+    "        y_val_pred = clf.predict(X_val)\n",
+    "        end_time = time.time()  # 记录预测结束时间\n",
+    "        val_prediction_time = end_time - start_time  # 计算预测时间\n",
+    "\n",
+    "        val_acc = accuracy_score(y_val, y_val_pred)\n",
+    "        val_f1 = f1_score(y_val, y_val_pred)\n",
+    "        val_recall = recall_score(y_val, y_val_pred)\n",
+    "        val_precision = precision_score(y_val, y_val_pred)\n",
+    "        val_results[name] = (val_acc, val_f1, val_recall, val_precision)\n",
+    "\n",
+    "        # 测试集评估\n",
+    "        start_time = time.time()  # 记录预测开始时间\n",
+    "        y_pred = clf.predict(X_test)\n",
+    "        end_time = time.time()  # 记录预测结束时间\n",
+    "        prediction_time = end_time - start_time  # 计算预测时间\n",
+    "        prediction_times[name] = prediction_time\n",
+    "\n",
+    "        acc = accuracy_score(y_test, y_pred)\n",
+    "        f1 = f1_score(y_test, y_pred)\n",
+    "        recall = recall_score(y_test, y_pred)\n",
+    "        precision = precision_score(y_test, y_pred)\n",
+    "        results[name] = (acc, f1, recall, precision)\n",
+    "\n",
+    "    return results,  training_times, prediction_times"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "360498ec4a154b9b",
+   "metadata": {
+    "collapsed": false,
+    "is_executing": true,
+    "ExecuteTime": {
+     "start_time": "2024-10-19T15:36:59.292379Z"
+    }
+   },
+   "outputs": [
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "F:\\Ana\\11\\lib\\site-packages\\sklearn\\linear_model\\_logistic.py:460: ConvergenceWarning: lbfgs failed to converge (status=1):\n",
+      "STOP: TOTAL NO. of ITERATIONS REACHED LIMIT.\n",
+      "\n",
+      "Increase the number of iterations (max_iter) or scale the data as shown in:\n",
+      "    https://scikit-learn.org/stable/modules/preprocessing.html\n",
+      "Please also refer to the documentation for alternative solver options:\n",
+      "    https://scikit-learn.org/stable/modules/linear_model.html#logistic-regression\n",
+      "  n_iter_i = _check_optimize_result(\n"
+     ]
+    }
+   ],
+   "source": [
+    "# 分类器对比结果\n",
+    "classifier_results, classifier_training_times, classifier_prediction_times = evaluate_classifiers(train_samples, val_samples,test_samples, classifiers, contrastive_model)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "d69c9be6be0153dd",
+   "metadata": {
+    "collapsed": false,
+    "is_executing": true
+   },
+   "outputs": [],
+   "source": [
+    "plt.style.use('default')\n",
+    "# 绘制消融实验结果\n",
+    "labels_ablation = ['Initial', 'Contrastive', 'Initial+MLP', 'Contrastive+MLP']\n",
+    "# acc\n",
+    "acc_values_ablation = [initial_acc, contrastive_acc, initial_mlp_acc, contrastive_mlp_acc]\n",
+    "#f1分数\n",
+    "f1_values_ablation = [initial_f1, contrastive_f1, initial_mlp_f1, contrastive_mlp_f1]\n",
+    "#召回率\n",
+    "recall_values_ablation = [initial_recall, contrastive_recall, initial_mlp_recall, contrastive_mlp_recall]\n",
+    "#准确率\n",
+    "precision_values_ablation=[initial_precision,contrastive_precision,initial_mlp_precision,contrastive_mlp_precision]\n",
+    "x_ablation = range(len(labels_ablation))\n",
+    "\n",
+    "# 合并指标的消融实验图\n",
+    "plt.figure(figsize=(8, 6))\n",
+    "plt.plot(x_ablation, acc_values_ablation, label='Accuracy', marker='o')\n",
+    "plt.plot(x_ablation, f1_values_ablation, label='F1 Score', marker='x')\n",
+    "plt.plot(x_ablation, recall_values_ablation, label='Recall', marker='s')\n",
+    "plt.plot(x_ablation, precision_values_ablation, label='Precision', marker='d')\n",
+    "plt.xticks(x_ablation, labels_ablation, rotation=45, ha='right')\n",
+    "plt.ylabel('Metrics')\n",
+    "plt.title('Ablation Study - Combined Metrics')\n",
+    "plt.legend()\n",
+    "plt.tight_layout()\n",
+    "plt.savefig(time.time().__str__()+'Ablation Study - Combined Metrics'+\".png\")\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "14607b96ec03842a",
+   "metadata": {
+    "collapsed": false,
+    "is_executing": true
+   },
+   "outputs": [],
+   "source": [
+    "# 绘制模型对比实验结果\n",
+    "labels_model_comparison = list(classifier_results.keys())\n",
+    "acc_values_model_comparison = [result[0] for result in classifier_results.values()]\n",
+    "f1_values_model_comparison = [result[1] for result in classifier_results.values()]\n",
+    "recall_values_model_comparison = [result[2] for result in classifier_results.values()]\n",
+    "precision_values_model_comparison = [result[3] for result in classifier_results.values()]\n",
+    "x_model_comparison = range(len(labels_model_comparison))\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "678ac7670eff6e89",
+   "metadata": {
+    "collapsed": false,
+    "is_executing": true
+   },
+   "outputs": [],
+   "source": [
+    "# 绘制综合模型对比实验结果\n",
+    "labels_model_comparison.append(\"Contrastive+MLP\")\n",
+    "acc_values_model_comparison.append(contrastive_mlp_acc)\n",
+    "f1_values_model_comparison.append(contrastive_mlp_f1)\n",
+    "recall_values_model_comparison.append(contrastive_mlp_recall)\n",
+    "precision_values_model_comparison.append(contrastive_mlp_precision)\n",
+    "\n",
+    "x_model_comparison = range(len(labels_model_comparison))\n",
+    "\n",
+    "# 合并指标的模型对比实验图\n",
+    "plt.figure(figsize=(8, 6))\n",
+    "plt.plot(x_model_comparison, acc_values_model_comparison, label='Accuracy', marker='o')\n",
+    "plt.plot(x_model_comparison, f1_values_model_comparison, label='F1 Score', marker='x')\n",
+    "plt.plot(x_model_comparison, recall_values_model_comparison, label='Recall', marker='s')\n",
+    "plt.plot(x_model_comparison, precision_values_model_comparison, label='Precision', marker='d')\n",
+    "plt.xticks(x_model_comparison, labels_model_comparison, rotation=45, ha='right')\n",
+    "plt.ylabel('Metrics')\n",
+    "plt.title('Model Comparison - Combined Metrics')\n",
+    "plt.legend()\n",
+    "plt.tight_layout()\n",
+    "plt.savefig(time.time().__str__()+'Model Comparison - Combined Metrics'+\".png\")\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "4dcfbd2322dc15f0",
+   "metadata": {
+    "collapsed": false,
+    "is_executing": true
+   },
+   "outputs": [],
+   "source": [
+    "# 绘制训练时间对比图\n",
+    "training_times_model_comparison = list(classifier_training_times.values())\n",
+    "training_times_model_comparison.append(initial_mlp_training_time)\n",
+    "training_times_model_comparison.append(contrastive_mlp_training_time)\n",
+    "training_times_model_comparison.append(contrastive_training_time)\n",
+    "\n",
+    "labels_training_time_comparison = list(classifier_training_times.keys())\n",
+    "labels_training_time_comparison.extend(['Initial+MLP', 'Contrastive+MLP', 'Contrastive'])\n",
+    "\n",
+    "x_training_time_comparison = range(len(labels_training_time_comparison))\n",
+    "\n",
+    "plt.figure(figsize=(8, 6))\n",
+    "plt.bar(x_training_time_comparison, training_times_model_comparison, tick_label=labels_training_time_comparison)\n",
+    "plt.xticks(rotation=45, ha='right')\n",
+    "plt.ylabel('Training Time (s)')\n",
+    "plt.title('Model Comparison - Training Time')\n",
+    "plt.tight_layout()\n",
+    "plt.savefig(time.time().__str__()+'Model Comparison - Training Time'+\".png\")\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "45b278de731f6e3b",
+   "metadata": {
+    "collapsed": false,
+    "is_executing": true
+   },
+   "outputs": [],
+   "source": [
+    "# 绘制预测时间对比图\n",
+    "prediction_times_model_comparison = list(classifier_prediction_times.values())\n",
+    "prediction_times_model_comparison.append(initial_mlp_prediction_time)\n",
+    "prediction_times_model_comparison.append(contrastive_mlp_prediction_time)\n",
+    "prediction_times_model_comparison.append(initial_prediction_time)\n",
+    "prediction_times_model_comparison.append(contrastive_prediction_time)\n",
+    "\n",
+    "labels_prediction_time_comparison = list(classifier_prediction_times.keys())\n",
+    "labels_prediction_time_comparison.extend(['Initial+MLP', 'Contrastive+MLP', 'Initial', 'Contrastive'])\n",
+    "\n",
+    "x_prediction_time_comparison = range(len(labels_prediction_time_comparison))\n",
+    "\n",
+    "plt.figure(figsize=(8, 6))\n",
+    "plt.bar(x_prediction_time_comparison, prediction_times_model_comparison, tick_label=labels_prediction_time_comparison)\n",
+    "plt.xticks(rotation=45, ha='right')\n",
+    "plt.ylabel('Prediction Time (s)')\n",
+    "plt.title('Model Comparison - Prediction Time')\n",
+    "plt.tight_layout()\n",
+    "plt.savefig(time.time().__str__()+'Model Comparison - Prediction Time'+\".png\")\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "outputs": [],
+   "source": [
+    "import random\n",
+    "\n",
+    "# 绘制控制权重的变化曲线\n",
+    "def plot_control_weights(control_weights_history, num_features_to_plot=20):\n",
+    "    plt.style.use('default')\n",
+    "    plt.figure(figsize=(10, 6))\n",
+    "    num_epochs = len(control_weights_history)\n",
+    "    num_total_features = len(control_weights_history[0])\n",
+    "\n",
+    "    # 随机选择 num_features_to_plot 个特征进行绘制\n",
+    "    sampled_features = random.sample(range(num_total_features), num_features_to_plot)\n",
+    "\n",
+    "    # 绘制采样特征的控制权重变化\n",
+    "    for feature_idx in sampled_features:\n",
+    "        feature_weights = [epoch_weights[feature_idx] for epoch_weights in control_weights_history]\n",
+    "        plt.plot(range(1, num_epochs + 1), feature_weights, label=f'Feature {feature_idx + 1}', alpha=0.7)\n",
+    "\n",
+    "    plt.xlabel('Epoch')\n",
+    "    plt.ylabel('Control Weight Value')\n",
+    "    plt.title(f'Control Weights Changes Over Epochs (Sample of {num_features_to_plot} Features)')\n",
+    "    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', ncol=1, fontsize='small', frameon=False)\n",
+    "    plt.tight_layout()\n",
+    "    plt.show()\n",
+    "\n",
+    "# 绘制控制权重变化 (采样 20 个特征)\n",
+    "plot_control_weights(control_weights_history, num_features_to_plot=20)"
+   ],
+   "metadata": {
+    "collapsed": false,
+    "is_executing": true
+   },
+   "id": "6d378486e08cc57c",
+   "execution_count": null
+  },
+  {
+   "cell_type": "markdown",
+   "id": "eeeb3e081bf4bf90",
+   "metadata": {
+    "collapsed": false
+   },
+   "source": [
+    "### 对比学习收敛图"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "b702ea7538513b02",
+   "metadata": {
+    "collapsed": false,
+    "is_executing": true
+   },
+   "outputs": [],
+   "source": [
+    "# 绘制对比学习的收敛图\n",
+    "plt.figure(figsize=(8, 6))\n",
+    "plt.plot(contrastive_losses, label='Training Loss')\n",
+    "plt.plot(val_losses, label='Validation Loss')\n",
+    "plt.xlabel('Epoch')\n",
+    "plt.ylabel('Loss')\n",
+    "plt.title('Contrastive Learning Loss Convergence')\n",
+    "plt.legend(loc='upper right')  # 将图例放在左上角\n",
+    "plt.tight_layout()\n",
+    "plt.savefig(time.time().__str__() + 'Contrastive Learning Loss Convergence' + \".png\")\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "21fa878ec96b98a1",
+   "metadata": {
+    "collapsed": false,
+    "is_executing": true
+   },
+   "outputs": [],
+   "source": [
+    "# 绘制在初始嵌入上MLP的收敛图\n",
+    "plt.figure(figsize=(8, 6))\n",
+    "plt.plot(initial_mlp_losses, label='train Loss')\n",
+    "plt.plot(initial_mlp_val_losses, label='valid Loss')\n",
+    "plt.xlabel('Epoch')\n",
+    "plt.ylabel('Loss')\n",
+    "plt.legend(loc='upper right')  # 将图例放在左上角\n",
+    "plt.title('Initial Embedding + MLP Loss Convergence')\n",
+    "plt.tight_layout()\n",
+    "plt.savefig(time.time().__str__()+'Initial Embedding + MLP Loss Convergence'+\".png\")\n",
+    "plt.show()\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "a2b52eb66bda0384",
+   "metadata": {
+    "collapsed": false,
+    "is_executing": true
+   },
+   "outputs": [],
+   "source": [
+    "# 绘制在对比学习嵌入上MLP的收敛图\n",
+    "plt.figure(figsize=(8, 6))\n",
+    "plt.plot(contrastive_mlp_losses, label='train Loss')\n",
+    "plt.plot(contrastive_mlp_val_losses, label='valid Loss')\n",
+    "plt.xlabel('Epoch')\n",
+    "plt.ylabel('Loss')\n",
+    "plt.legend(loc='upper right')  # 将图例放在左上角\n",
+    "plt.title('Contrastive Embedding + MLP Loss Convergence')\n",
+    "plt.tight_layout()\n",
+    "plt.savefig(time.time().__str__()+'Contrastive Embedding + MLP Loss Convergence'+\".png\")\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "83b477277f7547f8",
+   "metadata": {
+    "collapsed": false,
+    "is_executing": true
+   },
+   "outputs": [],
+   "source": [
+    "# 绘制T-SNE图\n",
+    "def plot_tsne(samples, contrastive_model=None, title=''):\n",
+    "    embeddings = []\n",
+    "    labels = []\n",
+    "    cnt=0\n",
+    "    for sample in samples:\n",
+    "        anchor = sample['code_embedding'].squeeze().numpy()\n",
+    "        embeddings.append(anchor)\n",
+    "        labels.append('anchor')\n",
+    "        for pos in sample['positive_embeddings']:\n",
+    "            embeddings.append(pos.squeeze().numpy())\n",
+    "            labels.append('positive')\n",
+    "        for neg in sample['negative_embeddings']:\n",
+    "            embeddings.append(neg.squeeze().numpy())\n",
+    "            labels.append('negative')\n",
+    "        cnt+=1\n",
+    "        if cnt==2:\n",
+    "            break\n",
+    "    if contrastive_model:\n",
+    "        contrastive_model.eval()\n",
+    "        embeddings = contrastive_model(torch.tensor(embeddings).to(device)).cpu().detach().numpy()\n",
+    "\n",
+    "    embeddings = np.array(embeddings)  # 确保 embeddings 是 NumPy 数组\n",
+    "\n",
+    "    tsne = TSNE(n_components=2, random_state=42)\n",
+    "    tsne_results = tsne.fit_transform(embeddings)\n",
+    "\n",
+    "    plt.figure(figsize=(8, 6))\n",
+    "    for label in ['anchor', 'positive', 'negative']:\n",
+    "        idx = [i for i, lbl in enumerate(labels) if lbl == label]\n",
+    "        plt.scatter(tsne_results[idx, 0], tsne_results[idx, 1], label=label)\n",
+    "    plt.legend()\n",
+    "    plt.title(title)\n",
+    "    plt.savefig(time.time().__str__()+title+\".png\")\n",
+    "    plt.show()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "3137c215252acf37",
+   "metadata": {
+    "collapsed": false,
+    "is_executing": true
+   },
+   "outputs": [],
+   "source": [
+    "# 绘制T-SNE图：对比学习前后的嵌入分布\n",
+    "plot_tsne(test_samples, title='T-SNE of Initial Embeddings')\n",
+    "plot_tsne(test_samples, contrastive_model, title='T-SNE of Contrastive Embeddings')"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "45dc865053329ea1",
+   "metadata": {
+    "collapsed": false,
+    "is_executing": true
+   },
+   "outputs": [],
+   "source": [
+    "# 打印所有实验结果\n",
+    "print(\"Ablation Study Results:\")\n",
+    "print(f\"Initial Embedding - ACC: {initial_acc}, F1: {initial_f1}, Recall: {initial_recall}, Precision: {initial_precision}, Prediction Time: {initial_prediction_time:.4f}s\")\n",
+    "print(f\"Contrastive Learning Embedding - ACC: {contrastive_acc}, F1: {contrastive_f1}, Recall: {contrastive_recall}, Precision: {contrastive_precision}, Training Time: {contrastive_training_time:.4f}s, Prediction Time: {contrastive_prediction_time:.4f}s\")\n",
+    "print(f\"Initial Embedding + MLP - ACC: {initial_mlp_acc}, F1: {initial_mlp_f1}, Recall: {initial_mlp_recall}, Precision: {initial_mlp_precision}, Training Time: {initial_mlp_training_time:.4f}s, Prediction Time: {initial_mlp_prediction_time:.4f}s\")\n",
+    "print(f\"Contrastive Learning Embedding + MLP - ACC: {contrastive_mlp_acc}, F1: {contrastive_mlp_f1}, Recall: {contrastive_mlp_recall}, Precision: {contrastive_mlp_precision}, Training Time: {contrastive_mlp_training_time:.4f}s, Prediction Time: {contrastive_mlp_prediction_time:.4f}s\")\n",
+    "\n",
+    "print(\"\\nModel Comparison Results:\")\n",
+    "for name, result in classifier_results.items():\n",
+    "    print(f\"{name} - ACC: {result[0]}, F1: {result[1]}, Recall: {result[2]}, Precision: {result[3]}, Training Time: {classifier_training_times[name]:.4f}s, Prediction Time: {classifier_prediction_times[name]:.4f}s\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "outputs": [],
+   "source": [],
+   "metadata": {
+    "collapsed": false,
+    "is_executing": true
+   },
+   "id": "7889ccc5d72b542e",
+   "execution_count": null
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "base",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.8.5"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}

@@ -1,0 +1,23 @@
+{
+    "experiment_summary": {
+        "total_models": 6,
+        "best_model": "full_model",
+        "best_accuracy": 1.0,
+        "average_accuracy": 0.9583333333333334,
+        "ablation_findings": {
+            "full_model_accuracy": 1.0,
+            "component_impact": {
+                "no_conba": 1.0,
+                "no_feedback": 1.0,
+                "no_control": 1.0
+            }
+        },
+        "classifier_findings": {
+            "best_classifier": "CNN",
+            "classifier_accuracies": {
+                "CNN": 1.0,
+                "BiLSTM": 0.75
+            }
+        }
+    }
+}

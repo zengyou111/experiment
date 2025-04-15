@@ -1,0 +1,16 @@
+Ablation Study Results:
+Initial Embedding - ACC: 0.5, F1: 0.6666666666666666, Recall: 1.0, Precision: 0.5, Prediction Time: 0.0310s
+Contrastive Learning Embedding - ACC: 0.975, F1: 0.975609756097561, Recall: 1.0, Precision: 0.9523809523809523, Training Time: 33.6850s, Prediction Time: 0.0360s
+Initial Embedding + MLP - ACC: 0.975, F1: 0.975609756097561, Recall: 1.0, Precision: 0.9523809523809523, Training Time: 0.5500s, Prediction Time: 0.0010s
+Contrastive Learning Embedding + MLP - ACC: 0.975, F1: 0.975609756097561, Recall: 1.0, Precision: 0.9523809523809523, Training Time: 1.1520s, Prediction Time: 0.0010s
+
+Model Comparison Results:
+Logistic Regression - ACC: 0.975, F1: 0.975609756097561, Recall: 1.0, Precision: 0.9523809523809523, Training Time: 0.0300s, Prediction Time: 0.0010s
+SVM - ACC: 0.975, F1: 0.975609756097561, Recall: 1.0, Precision: 0.9523809523809523, Training Time: 0.0040s, Prediction Time: 0.0010s
+Random Forest - ACC: 0.975, F1: 0.975609756097561, Recall: 1.0, Precision: 0.9523809523809523, Training Time: 0.1930s, Prediction Time: 0.0090s
+KNN - ACC: 0.975, F1: 0.975609756097561, Recall: 1.0, Precision: 0.9523809523809523, Training Time: 0.0000s, Prediction Time: 0.0060s
+Decision Tree - ACC: 0.975, F1: 0.975609756097561, Recall: 1.0, Precision: 0.9523809523809523, Training Time: 0.0100s, Prediction Time: 0.0000s
+Extra Tree - ACC: 0.975, F1: 0.975609756097561, Recall: 1.0, Precision: 0.9523809523809523, Training Time: 0.0010s, Prediction Time: 0.0000s
+Gaussian NB - ACC: 0.975, F1: 0.975609756097561, Recall: 1.0, Precision: 0.9523809523809523, Training Time: 0.0010s, Prediction Time: 0.0010s
+Gradient Boosting - ACC: 0.975, F1: 0.975609756097561, Recall: 1.0, Precision: 0.9523809523809523, Training Time: 1.2410s, Prediction Time: 0.0010s
+AdaBoost - ACC: 0.975, F1: 0.975609756097561, Recall: 1.0, Precision: 0.9523809523809523, Training Time: 0.0140s, Prediction Time: 0.0000s
