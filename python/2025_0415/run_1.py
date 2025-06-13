@@ -26,6 +26,30 @@ lr1 = 3e-6
 lr2 = 1e-4  # 分类器学习率
 ProjectionBatchSize = 1
 BatchSize = 64
+
+
+# 语言组合字典
+langs_path_dict={
+    'java-python':'../../../Datasets/code_pairs_java_python.jsonl',
+    'cpp-python':'../../../Datasets/code_pairs_cpp_python.jsonl',
+    'java-cpp':'../../../Datasets/code_pairs_java_c_python.jsonl',
+    'java-cs':'../../../Datasets/code_pairs_java_css.jsonl',
+}
+
+
+# 编码器模型字典组合:'codebert-base','codeExecutor','CodeReviewer','graphCodeBert','longcoder-base','unixcoder'
+model_path_dict={
+    'codebert-base':'../../../model/codebert-base/',
+    'codeExecutor':'../../../model/codeExecutor/',
+    'CodeReviewer':'../../../model/CodeReviewer/',
+    'graphCodeBert':'../../../model/graphCodeBert/',
+    'longcoder-base':'../../../model/longcoder/',
+    'unixcoder':'../../../model/unixcoder/',
+
+}
+
+
+##### TODO 改为字典类型
 modelPath = '../../../model/unixcoder/'
 langPath = '../../../Datasets/code_pairs_java_python.jsonl'
 
